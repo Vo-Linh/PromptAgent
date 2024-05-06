@@ -7,10 +7,15 @@ import google.generativeai as palm
 from datetime import datetime
 import pytz
 
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from huggingface_hub import login
+
 # Supported models
 CHAT_COMPLETION_MODELS = ['gpt-3.5-turbo', 'gpt-3.5-turbo-0301', 'gpt-4', 'gpt-4-0314']
 COMPLETION_MODELS =  ['text-davinci-003', 'text-davinci-002','code-davinci-002']
 PALM_MODELS = ['models/chat-bison-001']
+CHAT_COMPLETION_MODELS_HUNGINGFACE = ['nvidia/Llama3-ChatQA-1.5-8B']
 
 def get_pacific_time():
     current_time = datetime.now()
@@ -70,6 +75,32 @@ def batch_forward_chatcompletion(batch_prompts, model='gpt-3.5-turbo', temperatu
         responses.append(response['choices'][0]['message']['content'].strip())
     return responses
 
+def batch_forward_hungingface(batch_prompts, model, tokenizer,temperature=0):
+    """
+    Input a batch of prompts to openai chat API and retrieve the answers.
+    """
+    responses = []
+    for prompt in batch_prompts:
+        messages = [{"role": "user", "content": prompt},]
+        formatted_input = get_formatted_input(messages, prompt)
+        tokenized_prompt = tokenizer(tokenizer.bos_token + formatted_input, return_tensors="pt").to(model.device)
+
+        terminators = [
+            tokenizer.eos_token_id,
+            tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        ]
+        inputs = tokenizer.apply_chat_template(messages, return_tensors="pt").to("cuda")
+
+        outputs = model.generate(input_ids=tokenized_prompt.input_ids, 
+                                 attention_mask=tokenized_prompt.attention_mask,
+                                 temperature = temperature,
+                                 max_length = 2000,
+                                 eos_token_id=terminators)
+        response = outputs[0][tokenized_prompt.input_ids.shape[-1]:]
+
+        responses.append(tokenizer.decode(response, skip_special_tokens=True))
+    return responses
+
 def batch_forward_chatcompletion_palm(batch_prompts, model='models/chat-bison-001', temperature=0):
     """
     Input a batch of prompts to PaLM chat API and retrieve the answers.
@@ -110,8 +141,8 @@ def gpt_chat_completion(**kwargs):
     while True:
         try:
             return openai.ChatCompletion.create(**kwargs)
-        except openai.error.OpenAIError:
-            print(openai.error.OpenAIError, f' Sleeping {backoff_time} seconds...')
+        except openai.OpenAIError:
+            print(openai.OpenAIError, f' Sleeping {backoff_time} seconds...')
             time.sleep(backoff_time)
             backoff_time *= 1.5
 
@@ -120,8 +151,51 @@ def gpt_completion(**kwargs):
     while True:
         try:
             return openai.Completion.create(**kwargs)
-        except openai.error.OpenAIError:
-            print(openai.error.OpenAIError, f' Sleeping {backoff_time} seconds...')
+        except openai.OpenAIError:
+            print(openai.OpenAIError, f' Sleeping {backoff_time} seconds...')
             time.sleep(backoff_time)
             backoff_time *= 1.5
 
+def get_formatted_input(messages, context=None):
+        system = "System: This is a chat between a user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions based on the context. The assistant should also indicate when the answer cannot be found in the context."
+        instruction = "Please give a full and complete answer for the question."
+
+        for item in messages:
+            if item['role'] == "user":
+                ## only apply this instruction for the first user turn
+                item['content'] = instruction + " " + item['content']
+                break
+
+        conversation = '\n\n'.join(["User: " + item["content"] if item["role"] == "user" else "Assistant: " + item["content"] for item in messages]) + "\n\nAssistant:"
+        if context is None:
+            formatted_input = system  + "\n\n" + conversation
+            return formatted_input
+        
+        formatted_input = system + "\n\n" + context + "\n\n" + conversation        
+        return formatted_input
+
+def huggingface_completion(messages ,model, tokenizer,temperature=0):
+
+    formatted_input = get_formatted_input(messages)
+    tokenized_prompt = tokenizer(tokenizer.bos_token + formatted_input, return_tensors="pt").to(model.device)
+
+    terminators = [
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    ]
+    inputs = tokenizer.apply_chat_template(messages, return_tensors="pt").to("cuda")
+
+    outputs = model.generate(input_ids=tokenized_prompt.input_ids, 
+                                attention_mask=tokenized_prompt.attention_mask,
+                                temperature = temperature,
+                                max_length = 2000,
+                                eos_token_id=terminators)
+    response = outputs[0][tokenized_prompt.input_ids.shape[-1]:]
+    return tokenizer.decode(response, skip_special_tokens=True)
+    
+
+
+    
+    
+
+ 

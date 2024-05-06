@@ -60,7 +60,15 @@ class WorldModel(Generic[State, Action]):
             forward_temperature=pred_temperature, 
             optim_temperature = optim_temperature,
             )
-        
+        if self.pred_model in CHAT_COMPLETION_MODELS_HUNGINGFACE:
+            login(token="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")
+            model_id = "nvidia/Llama3-ChatQA-1.5-8B"
+
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, 
+                                                 torch_dtype=torch.float16, 
+                                                 load_in_4bit=True,
+                                                 device_map="auto",)
         self.log_vars()
         
     def log_vars(self):
@@ -186,6 +194,8 @@ class WorldModel(Generic[State, Action]):
             batch_forward_func = batch_forward_chatcompletion
         elif self.pred_model in PALM_MODELS:
             batch_forward_func = batch_forward_chatcompletion_palm
+        elif self.pred_model in CHAT_COMPLETION_MODELS_HUNGINGFACE:
+            batch_forward_func = batch_forward_hungingface
         else:
             raise ValueError(f"Model {self.pred_model} not supported.")
         
@@ -199,7 +209,10 @@ class WorldModel(Generic[State, Action]):
         pbar = tqdm(dataloader, leave=False)
         for batch in pbar:
             batch_prompts = build_forward_prompts_func(batch['question'], eval_prompt)
-            responses = batch_forward_func(batch_prompts, model=self.pred_model, temperature=self.pred_temperature)
+            if self.pred_model in CHAT_COMPLETION_MODELS_HUNGINGFACE:
+                responses = batch_forward_func(batch_prompts, model=self.model, tokenizer=self.tokenizer,temperature=self.pred_temperature)
+            else:
+                responses = batch_forward_func(batch_prompts, model=self.pred_model, temperature=self.pred_temperature)
             preds = task.batch_clean_responses(responses)
             labels = task.clean_labels(batch['answer'])
             all_preds.extend(preds)

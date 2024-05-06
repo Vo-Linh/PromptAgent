@@ -34,7 +34,7 @@ class GradientDescent():
         self.error_example_template    = error_example_template
         
         self.example_temlate = example_template_v0
-        
+ 
         self._build_forward_prompts_func = task.build_forward_prompts_completion
         if pred_model in COMPLETION_MODELS:
             self._batch_forward_func = batch_forward_completion
@@ -42,6 +42,15 @@ class GradientDescent():
             self._batch_forward_func = batch_forward_chatcompletion
         elif pred_model in PALM_MODELS:
             self._batch_forward_func = batch_forward_chatcompletion_palm
+        elif pred_model in CHAT_COMPLETION_MODELS_HUNGINGFACE:
+            model_id = "nvidia/Llama3-ChatQA-1.5-8B"
+
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, 
+                                                 torch_dtype=torch.float16, 
+                                                 load_in_4bit=True,
+                                                 device_map="auto",)
+            self._batch_forward_func = batch_forward_hungingface
         else:
             raise ValueError(f"Model {pred_model} not supported.")
         
@@ -49,7 +58,11 @@ class GradientDescent():
     def forward(self, batch, cur_prompt):
         batch_size = len(batch['question'])
         batch_prompts =self._build_forward_prompts_func(batch['question'], cur_prompt)
-        responses = self._batch_forward_func(batch_prompts, model=self.pred_model, temperature=self.forward_temperature)
+
+        if self.pred_model in CHAT_COMPLETION_MODELS_HUNGINGFACE:
+            responses = self._batch_forward_func(batch_prompts, model=self.model, tokenizer=self.tokenizer,temperature=self.forward_temperature)
+        else:
+            responses = self._batch_forward_func(batch_prompts, model=self.pred_model, temperature=self.forward_temperature)
         preds = self.task.batch_clean_responses(responses)
         
         labels = self.task.clean_labels(batch['answer'])
@@ -121,9 +134,17 @@ class GradientDescent():
 
     def _optim_model_completion(self, model_input):
         messages = [{"role": "user", "content": model_input},]
-        response = gpt_chat_completion(messages=messages, 
-                                       model=self.optim_model, 
-                                       temperature=self.optim_temperature)['choices'][0]['message']['content'].strip()
+        # response = gpt_chat_completion(messages=messages, 
+        #                                model=self.optim_model, 
+        #                                temperature=self.optim_temperature)['choices'][0]['message']['content'].strip()
+        response = huggingface_completion(messages=messages,
+                                          model=self.model,
+                                          tokenizer=self.tokenizer,
+                                          temperature =0)
+        print("="*10)
+        print(response)
+        print("="*10)
+
         return response
 
     def _build_prompt_trajectory_str(self, prompts):
